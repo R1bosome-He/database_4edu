@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>EduDBMS 控制台</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <div class="brand">
+          <p class="eyebrow">Database Kernel Lab</p>
+          <h1>EduDBMS 控制台</h1>
+        </div>
+        <div class="top-actions">
+          <span id="userBadge" class="badge">admin</span>
+          <span id="optimizerBadge" class="badge success">Optimizer ON</span>
+          <button id="exportBtn" class="ghost">导出测试报告</button>
+          <button id="loadDemoBtn" class="ghost">重置演示数据</button>
+        </div>
+      </header>
+
+      <section class="stats-strip" aria-label="系统概览">
+        <article>
+          <span>数据表</span>
+          <strong id="statTables">0</strong>
+        </article>
+        <article>
+          <span>记录数</span>
+          <strong id="statRows">0</strong>
+        </article>
+        <article>
+          <span>索引数</span>
+          <strong id="statIndexes">0</strong>
+        </article>
+        <article>
+          <span>事务</span>
+          <strong id="statTx">Ready</strong>
+        </article>
+      </section>
+
+      <main class="workspace">
+        <section class="panel editor-panel">
+          <div class="panel-head">
+            <div>
+              <h2>SQL 工作台</h2>
+              <p>Ctrl + Enter 运行当前 SQL。</p>
+            </div>
+            <button id="runBtn" class="primary">运行</button>
+          </div>
+          <textarea id="sqlInput" spellcheck="false"></textarea>
+          <div class="preset-grid">
+            <button data-sql="COMPARE SELECT id, name, major FROM students WHERE id = 480;">索引查询对比</button>
+            <button data-sql="COMPARE SELECT students.name, enrollments.course, enrollments.score FROM students JOIN enrollments ON students.id = enrollments.student_id WHERE students.id = 480;">Join 优化对比</button>
+            <button data-sql="SELECT id, name, grade FROM students WHERE major = 'database' ORDER BY grade DESC, id ASC;">ORDER BY 排序</button>
+            <button data-sql="BEGIN;">BEGIN</button>
+            <button data-sql="UPDATE students SET major = 'security' WHERE id = 12;">UPDATE</button>
+            <button data-sql="ROLLBACK;">ROLLBACK</button>
+            <button data-sql="DELETE FROM enrollments WHERE score < 62;">DELETE</button>
+            <button data-sql="EXPLAIN OPTIMIZER ON SELECT id, name, major FROM students WHERE id = 480;">EXPLAIN</button>
+          </div>
+          <div class="login-row">
+            <input id="loginUser" value="admin" aria-label="用户名" />
+            <input id="loginPassword" value="admin" type="password" aria-label="密码" />
+            <button id="loginBtn">登录</button>
+            <button id="readerBtn">reader</button>
+          </div>
+        </section>
+
+        <section class="panel result-panel">
+          <div class="panel-head compact">
+            <div>
+              <h2>结果与指标</h2>
+              <p id="resultHint">等待执行 SQL。</p>
+            </div>
+          </div>
+          <div id="compareView" class="compare-grid"></div>
+          <div id="chartView" class="chart-grid"></div>
+          <div id="metricsView" class="metrics-grid"></div>
+          <div class="table-wrap">
+            <table id="resultTable"></table>
+          </div>
+        </section>
+
+        <section class="panel visual-panel">
+          <div class="panel-head compact">
+            <div>
+              <h2>执行计划可视化</h2>
+              <p>物理算子树和优化器选择。</p>
+            </div>
+          </div>
+          <div id="planTreeView" class="plan-tree-grid"></div>
+          <details class="raw-plan">
+            <summary>原始执行计划</summary>
+            <pre id="planView">Projection
+  IndexScan / SeqScan
+  Filter / Join</pre>
+          </details>
+        </section>
+
+        <section class="panel schema-panel">
+          <div class="panel-head compact">
+            <div>
+              <h2>数据目录</h2>
+              <p>表、字段、页数、索引。</p>
+            </div>
+          </div>
+          <div id="schemaView" class="schema-list"></div>
+        </section>
+
+        <section class="panel audit-panel">
+          <div class="panel-head compact">
+            <div>
+              <h2>安全审计</h2>
+              <p>用户、SQL、状态、耗时。</p>
+            </div>
+          </div>
+          <div id="auditView" class="audit-list"></div>
+        </section>
+      </main>
+    </div>
+
+    <div id="toast" class="toast" hidden></div>
+    <script src="/app.js"></script>
+  </body>
+</html>

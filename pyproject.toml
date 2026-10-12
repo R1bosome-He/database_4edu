@@ -1,0 +1,11 @@
+[project]
+name = "edu-dbms"
+version = "0.1.0"
+description = "A teaching DBMS for database principles and security coursework."
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
