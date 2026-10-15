@@ -20,3 +20,11 @@ class CorruptionError(DatabaseError):
 
 class PageFullError(DatabaseError):
     pass
+
+
+class LegacyFormatError(DatabaseError):
+    pass
+
+
+class BufferClosedError(DatabaseError, RuntimeError):
+    pass

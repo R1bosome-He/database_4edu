@@ -8,7 +8,7 @@ EduDBMS 是一个面向“数据库原理及安全”课程设计的教学型迷
 
 团队另起的独立项目位于 [modular_dbms/](modular_dbms/README.md)，不依赖本目录下的 `edu_dbms`。其[需求对照](modular_dbms/docs/requirements.md)、[4 人分工和阶段验收](modular_dbms/docs/team_plan.md)已单独整理。
 
-新项目目前完成 M1 存储与元数据，21 项测试通过；SQL、缓冲池、Web 和事务等仍待逐模块开发。下面的启动方式及功能介绍针对原有演示版，不代表新项目已经实现这些功能。
+新项目已实现 A 的新版存储、目录、缓冲与 WAL/恢复接入接口，共 106 项模块及兼容测试通过；使用方式见[新版 A 接入说明](modular_dbms/docs/module_a_contract.md)。真实日志、事务、SQL 和 Web 仍需其他模块实现及联调。下面的启动方式及功能介绍针对原有演示版，不代表新项目已经实现这些功能。
 
 ## 1. 环境要求
 

@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from edudb import Catalog, Column, TableSchema
+from edudb.legacy_api import Catalog, Column, TableSchema
 from edudb.errors import AlreadyExistsError, CorruptionError, NotFoundError, ValidationError
 
 
