@@ -1,11 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "edu-dbms"
+name = "edudb-modular"
 version = "0.1.0"
-description = "A teaching DBMS for database principles and security coursework."
+description = "A module-by-module educational database project."
 requires-python = ">=3.10"
 dependencies = []
 
-[tool.pytest.ini_options]
-pythonpath = ["."]
-testpaths = ["tests"]
+[project.scripts]
+edudb-modular = "edudb.__main__:main"
 
+[tool.setuptools.packages.find]
+include = ["edudb*"]
