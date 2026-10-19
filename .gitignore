@@ -1,4 +1,11 @@
 __pycache__/
 *.py[cod]
+.venv/
+*.egg-info/
+build/
+dist/
 .edudb*/
-
+.test_tmp/
+.c_demo_data/
+*.wal
+work/

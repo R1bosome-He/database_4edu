@@ -1,86 +1,46 @@
-# 测试报告
+# A 模块（M1/M2）实测记录
 
-## 测试环境
+> 2026-10-20 目录整合说明：本文保留远端 A 模块交付记录，早期“C 待开发”属于历史状态。C 初版及其独立测试已加入；A/C 运行接口尚待适配，见 [整合状态](integration_status.md) 和 [C 测试](c_test_report.md)。当前命令从仓库根目录执行，不再需要 cd modular_dbms。
 
-- 语言：Python 3.10+
-- 依赖：仅 Python 标准库
-- 启动方式：`python -m edu_dbms`
+> 以下为旧版 69 项回归的历史记录。2026-10-16 的新版接口测试及验收边界见 [新版 A 接入说明](module_a_contract.md)：新增 36 项 A 接口测试和 1 项 CLI 测试，总计 106 项。
 
-## 自动化测试
+## 1. 本轮执行
 
-运行命令：
+- 日期：2026-10-15。
+- 平台：Windows / PowerShell。
+- 本次解释器：Python 3.14.5；声明的最低版本 3.10 尚未单独验证。
+- 工作目录：`modular_dbms/`。
+- 自动化命令：`python -m unittest discover -s tests -v`。
+- 实际结果：69 tests，OK；本次测试输出用时 2.362 秒，仅作运行记录，不作为性能基准。
+- 存储演示：`python -m edudb storage-demo`；重开后 180 条记录、2 个 4096 字节页，更新记录可读，删除后剩 179 条。
+- 缓冲演示：`python -m edudb buffer-demo`；访问 0,1,0,2 得到读盘 3、命中 1、淘汰 1，缓存最后为 [0,2]。
+- 热缓冲重复读取：读盘 0、命中 2；随后写入两页，flush 后脏页从 2 变 0；重开读到 4 条记录及更新后的值。
+- 首次 M1 基线为 21 tests，OK；本轮在保留基线行为的基础上增加缓冲适配器、失败路径、页清单及命令测试。
 
-```powershell
-python -m unittest discover -s tests
-```
+## 2. 覆盖范围
 
-覆盖用例：
+| 测试文件 | 方法数 | 覆盖 |
+| --- | --- | --- |
+| tests/test_catalog.py | 7 | 元数据重开、重复表名、不存在的表、损坏格式、写入失败、非法表定义、类型与 NULL 规则 |
+| tests/test_storage.py | 28（14 x 2） | 同组用例分别通过直接磁盘和缓冲适配器执行，涵盖重开、主键、稳定 RID、类型/超大页失败、缺页/坏页、写回失败 |
+| tests/test_buffer.py | 19 | LRU、写回、读写副本、指标、前置页顺序、部分失败重试、clear/close、容量与表隔离 |
+| tests/test_manifest.py | 13 | 尾页/整目录缺失、孤立页、清单保存失败补偿、缓存保留、显式升级、版本/损坏检查、迁移失败不改原页 |
+| tests/test_cli.py | 2 | 缓冲演示结果、重复演示不重置数据、升级路径和幂等性 |
 
-1. 创建表、批量插入、创建索引。
-2. 对同一条 SQL 执行优化关闭和开启对比。
-3. 验证优化开启计划包含 `IndexScan`，优化关闭计划包含 `SeqScan`。
-4. 验证优化开启后的磁盘读页数低于优化关闭。
-5. 验证未授权用户无法查询，授权后可以查询。
-6. 验证 Join 查询在 `NestedLoopJoin` 和 `HashJoin` 下结果一致。
+部分方法包含多个子用例；69 是 unittest 执行用例数，包含对同一组 14 个存储测试使用两种适配器的运行，不等于 69 种独立功能。测试数据库全部在临时目录内创建；没有访问旧版 `.edudb_web`。
 
-## 手工演示测试
+## 3. 证据边界
 
-运行：
+本轮验证 A 的 M1/M2，不代表整个 DBMS 已完成，也不代替组员实际代码复核。
 
-```powershell
-python -m edu_dbms --demo
-```
+尚未验证或尚未实现：SQL、查询执行器、B+ 树、优化对比、Web、权限审计、事务、自动报告导出、真实浏览器、打包程序、跨平台运行、多进程并发、真实断电恢复。
 
-演示内容：
+故障测试使用替换文件或磁盘接口失败的模拟，不等价于操作系统断电测试。清单与数据同时被删、清单被伪造及升级前的尾页丢失不在检测保证范围内。没有性能加速倍数或整机 I/O 的结论。
 
-- 创建学生表和选课表。
-- 插入大批量测试数据。
-- 创建 B+ 树索引。
-- 对单表查询进行优化开关对比。
-- 对 Join 查询进行优化开关对比。
-- 创建普通用户并授权查询。
+## 4. 后续记录模板
 
-## Web 演示界面
+各模块负责人完成后追加实际记录，不预填成功结果。
 
-运行命令：
-
-```powershell
-python -m edu_dbms.web --reset-demo
-```
-
-浏览器访问：
-
-```text
-http://127.0.0.1:8765
-```
-
-界面验证点：
-
-- 点击“索引查询对比”，应看到优化关闭使用 `SeqScan`，优化开启使用 `IndexScan`。
-- 点击“Join 优化对比”，应看到优化关闭使用 `NestedLoopJoin`，优化开启使用 `HashJoin`。
-- 右侧指标卡片应显示磁盘读页和执行时间差异。
-- 数据目录应显示 `students`、`enrollments` 两张表及索引。
-- 安全审计区应展示最近 SQL 记录。
-
-## 关键指标
-
-`COMPARE` 输出包括：
-
-- `elapsed_ms`
-- `disk_reads`
-- `disk_writes`
-- `cache_hits`
-- `cache_misses`
-- `pages_touched`
-- `rows`
-
-这些指标用于证明优化器对查询执行计划和 I/O 成本的影响。
-
-## 新增功能测试点
-
-- `ORDER BY`：执行 `SELECT id, name, grade FROM students WHERE major = 'database' ORDER BY grade DESC, id ASC;`，结果应按年级降序、编号升序排列。
-- `UPDATE`：执行 `UPDATE students SET major = 'security' WHERE id = 12;` 后再次查询，应看到字段变化。
-- `DELETE`：执行 `DELETE FROM enrollments WHERE score < 62;` 后，选课表行数应减少。
-- 事务回滚：执行 `BEGIN; UPDATE ...; ROLLBACK;` 后再次查询，应恢复修改前状态。
-- 事务提交：执行 `BEGIN; DELETE ...; COMMIT;` 后再次查询，修改应保留。
-- Web 导出：点击“导出测试报告”，应下载 Markdown 报告文件。
+| 日期/版本 | 模块 | 命令与环境 | 数据集/输入 | 实际结果 | 未通过项与限制 | 执行人/复核人 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 待填写 | 待填写 | 待填写 | 待填写 | 待运行 | 待填写 | 待填写 |
