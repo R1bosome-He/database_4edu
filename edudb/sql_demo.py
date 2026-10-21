@@ -27,8 +27,8 @@ def _print_rows(title, result):
         print("  " + " | ".join("NULL" if v is None else str(v) for v in row))
 
 
-def demo(root):
-    with Runtime(root, buffer_pages=4) as app:
+def demo(root, runtime_type=Runtime):
+    with runtime_type(root, buffer_pages=4) as app:
         session = SqlSession(app)
         session.execute("CREATE TABLE students (id INT PRIMARY KEY, name TEXT NOT NULL, score INT)")
         session.execute("CREATE TABLE enroll (sid INT, course TEXT)")
@@ -74,14 +74,20 @@ def demo(root):
 def main():
     parser = argparse.ArgumentParser(description="Module B SQL compiler/optimizer demo")
     parser.add_argument("--db", type=Path, help="New empty directory; existing data is never reset")
+    parser.add_argument("--integrated", action="store_true", help="Use A StorageService with B/C and persistent WAL")
     args = parser.parse_args()
+    runtime_type = Runtime
+    if args.integrated:
+        from .integration.contract_runtime import ContractRuntime
+        runtime_type = ContractRuntime
+        print("Integrated runtime: A StorageService + B SQL + C executor/index/WAL")
     if args.db:
         if args.db.exists() and any(args.db.iterdir()):
             parser.error("--db must name a new or empty directory")
-        demo(args.db)
+        demo(args.db, runtime_type)
     else:
         with tempfile.TemporaryDirectory(prefix="edudb_sql_demo_") as path:
-            demo(path)
+            demo(path, runtime_type)
 
 
 if __name__ == "__main__":

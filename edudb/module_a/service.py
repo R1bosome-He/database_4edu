@@ -309,7 +309,7 @@ class StorageService:
             if any(column not in ids for column in constraint.columns):
                 raise DBError("INVALID_ARGUMENT", "Constraint references an unknown column ID")
             if constraint.kind == "FOREIGN_KEY":
-                target = catalog["tables"].get(constraint.ref_table)
+                target = asdict(table) if constraint.ref_table == table.id else catalog["tables"].get(constraint.ref_table)
                 if target is None or not constraint.ref_columns or len(constraint.columns) != len(constraint.ref_columns):
                     raise DBError("DEPENDENCY_NOT_FOUND", "Invalid foreign key target")
                 target_ids = {c["id"] for c in target["columns"]}
@@ -539,6 +539,36 @@ class StorageService:
                 frame.dirty = True
         finally:
             self._discard(prepared)
+
+    @api
+    def file_page_count(self, file_id: str) -> int:
+        self._online()
+        return self._file(file_id)["count"]
+
+    @api
+    def sync_all_files(self) -> None:
+        self.sync_files([CATALOG_KEY.file_id, *self._catalog()["files"]])
+
+    @api
+    def update_index_root(self, index_id: str, root_page_id: int, tx: Transaction) -> None:
+        self._online()
+        tx = self._transaction(tx.id, tx.session_id)
+        before = self._catalog()
+        file = self._file(index_id, before)
+        if type(root_page_id) is not int or not 0 <= root_page_id < file["count"]:
+            raise DBError("INVALID_ARGUMENT", "Index root must be allocated")
+        after = deepcopy(before)
+        for table in after["tables"].values():
+            for index in table["indexes"]:
+                if index["id"] == index_id:
+                    if index["root_page_id"] == root_page_id:
+                        return
+                    index["root_page_id"] = root_page_id
+                    table["version"] += 1
+                    after["version"] += 1
+                    self._append_apply(self._prepare_catalog(before, after, tx))
+                    return
+        raise DBError("OBJECT_NOT_FOUND", "Unknown index")
 
     @api
     def register_index_file(self, file_id: str, tx: Transaction) -> None:

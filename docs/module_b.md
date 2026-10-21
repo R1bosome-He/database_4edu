@@ -1,5 +1,7 @@
 # B 模块：SQL 编译、查询计划与优化
 
+> 2026-10-21：`SqlSession` 现在也可注入 `ContractRuntime`，运行真实 A 存储的 ABC 链路。计划仍使用 c_api，存储边界由显式适配处理。运行 `python -m edudb.sql_demo --integrated`，详见 [ABC 集成说明](abc_integration.md)。DDL 不允许夹在业务事务中。
+
 B 把 SQL 文本编译成 **C 执行器可直接消费的 `edudb.c_api` 计划**。B 不执行查询、不访问磁盘、不做鉴权；它只负责词法/语法分析、字段绑定、类型检查、逻辑计划生成和基于规则的优化。
 
 ## 1. 职责与边界

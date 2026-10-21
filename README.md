@@ -15,6 +15,35 @@ legacy/                旧版 edu_dbms、测试、示例及文档
 
 ## 运行新版
 
+### A+B+C 集成模式（2026-10-21）
+
+现在可使用 A 的正式 `StorageService` 承载 B 的 SQL 与 C 的执行器、索引、持久 WAL，不再由参考存储替代 A。先运行自动演示：
+
+```powershell
+python -m edudb.sql_demo --integrated
+```
+
+自己输入 SQL，数据会保存在指定目录，退出后可用同一命令重开：
+
+```powershell
+python -m edudb.integrated --db .edudb_integrated
+```
+
+在 `sql>` 提示符逐条输入（每条以分号结束）：
+
+```sql
+CREATE TABLE students (id INT PRIMARY KEY, name TEXT, score INT);
+INSERT INTO students VALUES (1,'Ada',90),(2,'Bob',80);
+CREATE INDEX ix_students_id ON students(id);
+SELECT name, score FROM students WHERE id=1;
+BEGIN;
+UPDATE students SET score=100 WHERE id=1;
+ROLLBACK;
+SELECT * FROM students ORDER BY score DESC;
+```
+
+输入 `.quit` 退出；未提交事务在正常退出时回滚。第二次打开已有库不要再次 CREATE 同名表。可用 `--sql "SELECT * FROM students"` 执行单条语句，或重复指定 `--sql`。详细接口、限制及恢复测试见 [ABC 集成说明](docs/abc_integration.md)。这是本地开发入口，没有 Web 或认证授权，不应作为对外服务。
+
 需要 Python 3.10+，运行仅使用标准库。在仓库根目录执行：
 
 ```powershell
@@ -23,7 +52,7 @@ python -m edudb.c_demo
 python -m edudb.sql_demo
 ```
 
-B 的 SQL 编译器已实现：把 SQL 文本编译为 C 直接消费的 c_api 计划（词法/语法分析、字段绑定、类型检查、规则优化），并经 C 的真实执行器端到端验证。正式 Web/权限接入由 D 完成；参考适配层与 A 的正式缓冲池、到 contracts.Expr 的统一转换仍待联调。
+B 的 SQL 编译器产出 C 消费的 c_api 计划。新增 ContractRuntime 通过明确适配把 A 的正式目录、记录、缓冲及恢复接口接入，B/C 内部计划类型暂不改写成 contracts.Expr。正式 Web/权限接入仍由 D 完成。未指定 `--integrated` 的 sql_demo 和原 c_demo 保留参考运行时，用于队友原有回归，不代表正式 A 链路。
 
 - [A 模块接入说明](docs/module_a_contract.md)
 - [B 模块说明（SQL 编译/计划/优化）](docs/module_b.md)
@@ -47,6 +76,6 @@ python -m edu_dbms.web --reset-demo
 
 已保留远端 d7c7dee 的完整 A 模块实现和本地 C 初版。A 文档见 [A 接口交接](docs/module_a_contract.md)，C 文档见 [C 模块说明](README_C.md)。
 
-本次解决目录与版本冲突，将新版提升至根目录；A 使用 edudb.contracts / StorageService，C 独立演示使用 c_api / 参考适配层，运行接口还没有统一，不把同目录共存表述为已完成联调。差异见 [整合状态](docs/integration_status.md)。SQL 编译和权限/Web 仍由 B/D 接入。
+历史目录整合与接口差异见 [整合状态](docs/integration_status.md)。2026-10-21 新增真实 A+B+C 集成入口、端到端与进程退出恢复测试，见 [ABC 集成说明](docs/abc_integration.md)。旧参考数据目录不自动迁移，请为集成入口使用新的数据目录。
 
-GitHub 默认目录只有在分支推送并合入 main 后才会变化，本次不 push。
+本地改动需提交并推送后，队友才能从 GitHub 拉取。

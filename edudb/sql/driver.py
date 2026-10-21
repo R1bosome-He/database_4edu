@@ -7,6 +7,7 @@ exercised end-to-end through module C's real executor, WAL and recovery.
 from __future__ import annotations
 
 import uuid
+from contextlib import nullcontext
 
 from ..c_api import ExecutionContext, QueryResult, ResultColumn
 from .catalog import RuntimeCatalog
@@ -31,9 +32,13 @@ class SqlSession:
         return ExecutionContext(uuid.uuid4().hex, self.session_id, self.user_id, tx.id), True
 
     def execute(self, sql: str, optimizer_enabled: bool | None = None) -> QueryResult:
-        enabled = self.optimizer_enabled if optimizer_enabled is None else optimizer_enabled
-        compiled = compile_sql(sql, self.catalog, CompileOptions(enabled))
-        return self._dispatch(compiled)
+        with getattr(self.runtime, "request_lock", nullcontext()):
+            enabled = self.optimizer_enabled if optimizer_enabled is None else optimizer_enabled
+            compiled = compile_sql(sql, self.catalog, CompileOptions(enabled))
+            if compiled.kind in {"CREATE_TABLE", "CREATE_INDEX"} and self.active_tx_id is not None:
+                from ..c_api import DBError
+                raise DBError("DDL_TRANSACTION_CONFLICT", "DDL requires an independent transaction")
+            return self._dispatch(compiled)
 
     def _dispatch(self, compiled) -> QueryResult:
         kind = compiled.kind
@@ -46,6 +51,9 @@ class SqlSession:
             self.runtime.create_table(compiled.table_schema, compiled.constraints or None)
             return QueryResult([], [], message=f"Table {compiled.table_schema.name} created")
         if kind == "CREATE_INDEX":
+            if hasattr(self.runtime, "create_index"):
+                info = self.runtime.create_index(compiled.index_spec, self.session_id, self.user_id)
+                return QueryResult([], [], message=f"Index {info.name} created")
             ctx, owned = self._context()
             info = self.runtime.executor.create_index(compiled.index_spec, ctx)
             if owned:

@@ -1,5 +1,7 @@
 # A/C 目录整合状态（2026-10-20）
 
+> 以下保留 2026-10-20 的历史状态。2026-10-21 已新增 `ContractRuntime` 真正接入 A 的 StorageService，入口为 `python -m edudb.sql_demo --integrated`。接口转换、当前限制和最新验证见 [ABC 集成说明](abc_integration.md)。原参考运行时仍保留，不将两条链路混称。
+
 ## 已完成的版本合并
 
 - 上游：`d7c7dee`，A 存储、元数据、缓冲池、共享合同与测试。
