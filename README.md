@@ -1,5 +1,26 @@
 # EduDB：模块化数据库课程项目
 
+## 新版 Web 工作台（D）
+
+```powershell
+python -m edudb.web --demo --port 8766
+```
+
+打开终端显示的 `http://127.0.0.1:8766/`。首次启动会生成管理员 `admin` 和随机密码，只在启动终端显示一次；密码以加盐 PBKDF2 摘要保存。后续启动沿用账号，不重置数据。`--demo` 仅在空库导入课程样例，不会删除已有表。
+
+新版界面直接调用 ABC 集成运行时，包含 SQL 工作台、分页结果与 CSV、可点击执行计划树、真实优化对比、表结构与索引、用户和表级授权、脱敏审计，以及一键 HTML 验收报告。**不是 legacy 的旧 Web，也不是模拟返回数据。**
+
+导出报告前，可先生成真实测试证据，再启动服务加载：
+
+```powershell
+python -m edudb.workbench.evidence
+python -m edudb.web --demo --port 8766 --test-evidence .test_tmp/workbench/test-evidence.json
+```
+
+证据与源文件指纹绑定，代码改变后自动标为过期；没有证据则标记未运行，不把历史测试数当作本次测试通过。报告包含实验逐次原始测量、指标中位数、环境及脱敏查询记录。
+
+详细启动、API、安全边界、浏览器验收见 [D 工作台交接说明](docs/module_d.md)。初次密码也可通过 `EDUDB_ADMIN_PASSWORD` 环境变量指定（至少 12 字符），不要写入源码或提交到 Git。
+
 新版项目及 C 模块现位于仓库根目录，旧版完整演示系统保存在 `legacy/`。保留原有 Git 提交历史。
 
 ## 项目结构

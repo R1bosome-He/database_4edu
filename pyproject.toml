@@ -11,6 +11,10 @@ dependencies = []
 
 [project.scripts]
 edudb-modular = "edudb.__main__:main"
+edudb-workbench = "edudb.web:main"
 
 [tool.setuptools.packages.find]
 include = ["edudb*"]
+
+[tool.setuptools.package-data]
+"edudb.workbench" = ["static/*"]
