@@ -20,11 +20,13 @@ legacy/                旧版 edu_dbms、测试、示例及文档
 ```powershell
 python -m unittest discover -s tests -v
 python -m edudb.c_demo
+python -m edudb.sql_demo
 ```
 
-C 接收已绑定的结构化计划，SQL 文本编译器和正式 Web/权限接入由 B/D 完成；参考适配层与 A 的正式缓冲池还需联调。
+B 的 SQL 编译器已实现：把 SQL 文本编译为 C 直接消费的 c_api 计划（词法/语法分析、字段绑定、类型检查、规则优化），并经 C 的真实执行器端到端验证。正式 Web/权限接入由 D 完成；参考适配层与 A 的正式缓冲池、到 contracts.Expr 的统一转换仍待联调。
 
 - [A 模块接入说明](docs/module_a_contract.md)
+- [B 模块说明（SQL 编译/计划/优化）](docs/module_b.md)
 - [C 模块说明](README_C.md)
 - [C 接口与计划格式](docs/c_interfaces.md)
 - [C 实现设计](docs/c_design.md)
