@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import base64
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -23,13 +24,16 @@ def redact(sql):
 
 
 class AuditLog:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, protector=None):
         self.path = path
+        self.protector=protector
         path.parent.mkdir(parents=True, exist_ok=True)
         self.events = []
         self.tail = "0" * 64
         if path.exists():
-            for line in path.read_text("utf-8").splitlines():
+            for number,line in enumerate(path.read_text("utf-8").splitlines(),1):
+                if protector:
+                    line=protector.open(base64.b64decode(line,validate=True),f"audit:{number}".encode())
                 event = json.loads(line)
                 digest = event.pop("hash")
                 if event["previous"] != self.tail or self._hash(event) != digest:
@@ -47,7 +51,10 @@ class AuditLog:
         digest = self._hash(event)
         event["hash"] = digest
         with self.path.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(event, ensure_ascii=False) + "\n")
+            raw=json.dumps(event,ensure_ascii=False).encode()
+            if self.protector:
+                raw=base64.b64encode(self.protector.seal(raw,f"audit:{event['sequence']}".encode()))
+            stream.write(raw.decode()+"\n")
             stream.flush()
             os.fsync(stream.fileno())
         self.tail = digest

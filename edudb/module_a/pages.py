@@ -57,8 +57,9 @@ def decode(raw: bytes, key: PageKey) -> Page:
 
 
 class PageFiles:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, protector=None) -> None:
         self.root = root
+        self.protector = protector
 
     def path(self, key: PageKey) -> Path:
         validate_key(key)
@@ -73,10 +74,17 @@ class PageFiles:
             return None
         if on_read is not None:
             on_read()
+        if self.protector:
+            from ..protection import page_context
+            raw=self.protector.open(raw,page_context(key))
         return decode(raw, key)
 
     def write(self, page: Page) -> None:
-        atomic_write(self.path(page.key), encode(page))
+        raw=encode(page)
+        if self.protector:
+            from ..protection import page_context
+            raw=self.protector.seal(raw,page_context(page.key))
+        atomic_write(self.path(page.key), raw)
 
     def sync(self, file_id: str) -> None:
         directory = self.path(PageKey(file_id, 0)).parent

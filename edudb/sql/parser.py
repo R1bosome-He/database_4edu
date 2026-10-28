@@ -19,13 +19,14 @@ _COMPARISONS = {"=", "<>", "!=", "<", "<=", ">", ">="}
 
 
 def parse(sql: str) -> ast.Node:
-    return Parser(tokenize(sql)).parse_program()
+    return Parser(tokenize(sql), sql).parse_program()
 
 
 class Parser:
-    def __init__(self, tokens: list[Token]) -> None:
+    def __init__(self, tokens: list[Token], source: str = "") -> None:
         self.tokens = tokens
         self.pos = 0
+        self.source = source
 
     # --- token helpers ---------------------------------------------------
     @property
@@ -97,7 +98,19 @@ class Parser:
         if self._at_kw("DELETE"):
             return self.parse_delete()
         if self._at_kw("CREATE"):
+            if self.tokens[self.pos + 1].is_keyword("VIEW"):
+                self._next()
+                self._next()
+                name = self._expect_ident()
+                self._expect_kw("AS")
+                start = self.pos
+                query = self.parse_select()
+                query_sql = " ".join(t.text for t in self.tokens[start:self.pos])
+                return ast.CreateViewStmt(name, query, query_sql)
             return self.parse_create()
+        if self._eat_kw("DROP"):
+            self._expect_kw("VIEW")
+            return ast.DropViewStmt(self._expect_ident())
         if self._at_kw("BEGIN", "START"):
             self._next()
             self._eat_kw("TRANSACTION", "WORK")

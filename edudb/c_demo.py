@@ -9,19 +9,20 @@ from pathlib import Path
 from .c_api import Expr, IndexSpec, PlanNode, RangeSpec, ResultColumn
 from .integration.runtime import Runtime
 from .models import Column, TableSchema
+from .demo_data import STUDENTS
 
 
 def demo(root):
     columns = [ResultColumn("s.id", "id", "INT", False), ResultColumn("s.name", "name", "TEXT"),
-               ResultColumn("s.grade", "grade", "INT")]
+               ResultColumn("s.score", "score", "INT")]
     def col(slot):
         return Expr("ColumnRef", slot_id=slot)
     with Runtime(root, buffer_pages=2) as app:
         app.create_table(TableSchema("students", (Column("id", "INT", False), Column("name", "TEXT"),
-                                                   Column("grade", "INT")), "id"))
+                                                   Column("score", "INT")), "id"))
         ctx = app.context()
         insert = PlanNode("insert", "Insert", properties=dict(table_id="students", rows=[
-            dict(id=i, name=f"student_{i}_" + "x" * 160, grade=2021+i % 4) for i in range(80)]))
+            dict(id=i,name=name,score=score) for i,name,department,score in STUDENTS]))
         result = app.executor.execute(insert, ctx)
         app.transactions.commit(ctx.tx_id)
         print(f"Inserted rows: {result.affected_rows}")
@@ -29,9 +30,9 @@ def demo(root):
         index = app.executor.create_index(IndexSpec("idx_students_id", "students", ["id"], True), ctx)
         app.transactions.commit(ctx.tx_id)
         scan = PlanNode("scan", "SeqScan", output_columns=columns, properties=dict(table_id="students"))
-        off = PlanNode("filter", "Filter", [scan], columns, [Expr("Binary", operator="=", args=[col("s.id"), Expr("Literal", 61)])])
+        off = PlanNode("filter", "Filter", [scan], columns, [Expr("Binary", operator="=", args=[col("s.id"), Expr("Literal", 5)])])
         on = PlanNode("index", "IndexScan", output_columns=columns, properties=dict(
-            table_id="students", index_id=index.id, range=RangeSpec(61, 61)))
+            table_id="students", index_id=index.id, range=RangeSpec(5, 5)))
         def run(plan):
             app.pages.reset_cache()
             ctx = app.context()
@@ -43,7 +44,7 @@ def demo(root):
         print(json.dumps({"results_equal": True, "off": baseline.metrics.to_dict(),
                           "on": indexed.metrics.to_dict()}, indent=2))
         ctx = app.context()
-        update = PlanNode("update", "Update", expressions=[Expr("Binary", operator="=", args=[col("s.id"), Expr("Literal", 61)])],
+        update = PlanNode("update", "Update", expressions=[Expr("Binary", operator="=", args=[col("s.id"), Expr("Literal", 5)])],
                           properties=dict(table_id="students", input_columns=columns,
                                           assignments={"name": Expr("Literal", "temporary")}))
         app.executor.execute(update, ctx)

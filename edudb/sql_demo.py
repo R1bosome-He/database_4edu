@@ -2,7 +2,7 @@
 
 Shows the full pipeline tokenize -> parse -> bind -> plan -> optimize running on
 module C's real executor, and the optimizer-on/off experiment (equal results,
-fewer real data-page reads with an index). Run from the repo root:
+actual data/index page reads; indexes may cost more on tiny tables). Run from the repo root:
 
     python -m edudb.sql_demo
     python -m edudb.sql_demo --db .sql_demo_data   # keep data in a new empty dir
@@ -30,12 +30,11 @@ def _print_rows(title, result):
 def demo(root, runtime_type=Runtime):
     with runtime_type(root, buffer_pages=4) as app:
         session = SqlSession(app)
-        session.execute("CREATE TABLE students (id INT PRIMARY KEY, name TEXT NOT NULL, score INT)")
+        session.execute("CREATE TABLE students (id INT PRIMARY KEY, name TEXT NOT NULL, department TEXT, score INT)")
         session.execute("CREATE TABLE enroll (sid INT, course TEXT)")
-        padding = "x" * 160
-        session.execute("INSERT INTO students VALUES " + ",".join(
-            f"({i}, 'student_{i}_{padding}', {60 + i % 40})" for i in range(80)))
-        session.execute("INSERT INTO enroll VALUES (1,'db'),(1,'os'),(3,'db'),(7,'ai'),(9,'db')")
+        from .demo_data import STUDENTS, sql_rows
+        session.execute("INSERT INTO students VALUES "+sql_rows(STUDENTS))
+        session.execute("INSERT INTO enroll VALUES (1,'数据库'),(1,'操作系统'),(3,'数据库'),(7,'计算机网络'),(9,'数据库')")
 
         _print_rows("SELECT with WHERE + ORDER BY + LIMIT",
                     session.execute("SELECT id, score FROM students WHERE score >= 95 "
@@ -44,13 +43,13 @@ def demo(root, runtime_type=Runtime):
                     session.execute("SELECT s.id, e.course FROM students s JOIN enroll e "
                                     "ON s.id = e.sid ORDER BY s.id, e.course"))
         _print_rows("Aggregate with GROUP BY / HAVING",
-                    session.execute("SELECT score, COUNT(*) AS n FROM students "
-                                    "GROUP BY score HAVING COUNT(*) > 1 ORDER BY score LIMIT 5"))
+                    session.execute("SELECT department, COUNT(*) AS n FROM students "
+                                    "GROUP BY department HAVING COUNT(*) > 1 ORDER BY department LIMIT 5"))
 
-        print("\nOptimizer experiment: SELECT name FROM students WHERE id = 61")
+        print("\nOptimizer experiment: SELECT name FROM students WHERE id = 5")
         session.execute("CREATE INDEX idx_students_id ON students (id)")
         catalog = RuntimeCatalog(app)
-        query = "SELECT name FROM students WHERE id = 61"
+        query = "SELECT name FROM students WHERE id = 5"
         for label, enabled in [("OFF", False), ("ON", True)]:
             compiled = compile_sql(query, catalog, CompileOptions(enabled))
             print(f"\n  plan (optimizer {label}):")
@@ -65,10 +64,10 @@ def demo(root, runtime_type=Runtime):
 
         print("\nTransaction rollback")
         session.execute("BEGIN")
-        session.execute("UPDATE students SET score = -1 WHERE id = 61")
-        print("  inside tx:", session.execute("SELECT score FROM students WHERE id = 61").rows)
+        session.execute("UPDATE students SET score = -1 WHERE id = 5")
+        print("  inside tx:", session.execute("SELECT score FROM students WHERE id = 5").rows)
         session.execute("ROLLBACK")
-        print("  after rollback:", session.execute("SELECT score FROM students WHERE id = 61").rows)
+        print("  after rollback:", session.execute("SELECT score FROM students WHERE id = 5").rows)
 
 
 def main():

@@ -208,3 +208,15 @@ class TxnStmt(Node):
 @dataclass
 class ExplainStmt(Node):
     inner: Node
+
+
+@dataclass
+class CreateViewStmt(Node):
+    name: str
+    query: SelectStmt
+    query_sql: str
+
+
+@dataclass
+class DropViewStmt(Node):
+    name: str

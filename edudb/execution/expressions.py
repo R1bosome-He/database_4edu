@@ -53,6 +53,8 @@ def evaluate(expr: Expr, row: dict, ctx, subquery) -> object:
         value = evaluate(expr.args[0], row, ctx, subquery) is None
         return not value if expr.operator == "IS NOT NULL" else value
     if expr.kind == "Unary":
+        if expr.operator=="-" and expr.args[0].kind=="Literal" and type(expr.args[0].value) is int:
+            return checked_number(-expr.args[0].value)
         value = evaluate(expr.args[0], row, ctx, subquery)
         if expr.operator == "NOT":
             return None if truth(value) is None else not value
@@ -84,7 +86,18 @@ def evaluate(expr: Expr, row: dict, ctx, subquery) -> object:
                 raise DBError("TYPE_ERROR", "Arithmetic requires numbers")
             if op in {"/", "%"} and right == 0:
                 raise DBError("DIVISION_BY_ZERO", "Division by zero")
-            value = {"+": operator.add, "-": operator.sub, "*": operator.mul,
-                     "/": operator.truediv, "%": operator.mod}[op](left, right)
+            if op == "%":
+                # SQL remainder follows the dividend; integer math avoids float
+                # rounding at the INT64 endpoints.
+                if type(left) is int and type(right) is int:
+                    quotient = abs(left) // abs(right)
+                    if (left < 0) != (right < 0):
+                        quotient = -quotient
+                    value = left - quotient * right
+                else:
+                    value = math.fmod(left, right)
+            else:
+                value = {"+": operator.add, "-": operator.sub, "*": operator.mul,
+                         "/": operator.truediv}[op](left, right)
             return checked_number(value)
     raise DBError("UNSUPPORTED_EXPRESSION", f"Unsupported {expr.kind}/{expr.operator}")

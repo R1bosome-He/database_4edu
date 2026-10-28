@@ -2,7 +2,7 @@
 
 ## 1. 当前交付
 
-本轮新增的 `edudb.web` 是新版 ABC 的 Web 请求入口，不引用 `legacy`。界面为本地静态 HTML/CSS/JavaScript，Python 运行时无第三方依赖；Lucide 图标随仓库分发，许可在 `static/LUCIDE-LICENSE`。页面不依赖 CDN 或外部字体。
+本轮新增的 `edudb.web` 是新版 ABC 的 Web 请求入口，不引用 `legacy`。界面为本地静态 HTML/CSS/JavaScript，加密工作台需要 Windows 及 cryptography 库；Lucide 图标随仓库分发，许可在 `static/LUCIDE-LICENSE`。页面不依赖 CDN 或外部字体。
 
 | 范围 | 实现 | 关键验证 |
 | --- | --- | --- |
@@ -23,9 +23,9 @@
 python -m edudb.web --demo --port 8766
 ```
 
-浏览器打开终端 URL。首次随机密码只在终端输出一次，账号为 admin；后续启动不会再输出或覆盖密码。默认数据目录 `.edudb_workbench` 被 Git 忽略。也可用 `--db 新目录` 分离演示数据；不要传入旧 ABC CLI 或参考运行时的数据目录。
+浏览器打开终端 URL。首次随机密码只在终端输出一次，账号为 admin；后续启动不会再输出或覆盖密码。默认数据目录 `.edudb_workbench_v2` 被 Git 忽略。也可用 `--db 新目录` 分离演示数据；不要传入旧 ABC CLI 或参考运行时的数据目录。
 
-`--demo` 在空库创建 students（240 行、id 索引）和 enrollments（24 行）；数据库仍通过真实 SQL 与 ABC 写入。已有库不清空。端口被占用时使用 `--port 8767` 或其他空闲端口。只绑定 127.0.0.1，不对局域网或公网提供服务。
+`--demo` 在空库创建 students（20 行、id 索引）和 enrollments（30 行，涉及 3 门课程）；数据库仍通过真实 SQL 与 ABC 写入。已有库不清空。端口被占用时使用 `--port 8767` 或其他空闲端口。只绑定 127.0.0.1，不对局域网或公网提供服务。
 
 初始密码可由环境变量 `EDUDB_ADMIN_PASSWORD` 指定，要求 12-128 字符；只在首次建立管理员时生效。丢失密码时不要覆盖已有数据或改成免登录；本轮未提供忘记密码和在线密码重置流程。管理员可创建额外账户供演示。
 
@@ -43,11 +43,13 @@ tests/test_workbench.py          D 单元与 HTTP 测试
 tests/web_smoke.cjs              可重复运行的真实浏览器验收
 ```
 
-成功 API 返回 JSON，失败为 `{error: {code, message, position, transaction_effect}}`。所有业务 API 需登录；POST 除登录外均需 X-CSRF-Token，所有 POST 需正确 Origin 与 application/json。前端从 `/api/state` 获取 CSRF，token 不存 localStorage。
+成功 API 返回 JSON，失败为 `{error: {code, message, position, transaction_effect}}`。登录与普通用户注册开放，其余业务 API 需登录；POST 除登录和注册外均需 X-CSRF-Token，所有 POST 需正确 Origin 与 application/json。前端从 `/api/state` 获取 CSRF，token 不存 localStorage。
 
 | 路径 | 方法 | 职责 |
 | --- | --- | --- |
 | /api/login、/api/logout | POST | 登录与退出 |
+| /api/register | POST | 普通用户注册，不得指定管理员或权限 |
+| /api/estimate | POST | SELECT 两种计划的执行前开销预估，不执行目标查询 |
 | /api/state | GET | 当前身份、可读目录、事务、历史和状态 |
 | /api/query | POST | sql、optimizer；返回结果、计划、指标 |
 | /api/compare | POST | sql、repeats、cache；返回中位数和样本 |
@@ -77,7 +79,7 @@ python -m edudb.web --demo --test-evidence .test_tmp/workbench/test-evidence.jso
 
 ## 5. 验收步骤
 
-本轮实测：Python 全量 **226 项通过**（原 ABC 211 项 + D 15 项）；Playwright + Edge 的 390/768/1440 三种宽度验收通过，页面脚本错误为 0，各视图无页面级横向溢出。真实浏览器执行了查询、节点详情、错误清空旧结果、事务回滚、实验、报告下载、创建用户、授权、审计、退出及越权拒绝。
+2026-10-28 实测：Python 全量 **254 项通过**（原有 226 项、第一轮新增 16 项及教学可视化新增 12 项）；Playwright + Edge 的 390/768/1440 三种宽度验收通过，页面脚本错误为 0，各视图无页面级横向溢出。真实浏览器执行了查询、节点详情、错误清空旧结果、事务回滚、实验、报告下载、创建用户、授权、审计、退出及越权拒绝。
 
 实际页面截图：
 
@@ -89,7 +91,7 @@ python -m edudb.web --demo --test-evidence .test_tmp/workbench/test-evidence.jso
 2. 启动 Web，未登录直接请求业务 API 应返回 401。
 3. 登录管理员，执行默认查询，检查 20 行结果、指标和可点击计划。
 4. 开始事务，更新 students 的 score，再回滚，查询确认恢复。
-5. 优化实验使用 `SELECT name, score FROM students WHERE id=61`，检查 ON/OFF 结果一致、图表及逐次记录，不强制速度胜负。
+5. 优化实验使用 `SELECT name, score FROM students WHERE id=5`，检查 ON/OFF 结果一致、图表及逐次记录，不强制速度胜负。
 6. 创建普通成员，只给 students 的 SELECT；新会话查询成功，DELETE、访问 enrollments、管理用户、审计均拒绝。
 7. 检查审计成功与拒绝事件；输入语法错误后，结果区不得保留旧表格。
 8. 导出报告核对测试证据和实验；退出登录后清除页面旧数据，未提交事务回滚。
@@ -99,10 +101,14 @@ python -m edudb.web --demo --test-evidence .test_tmp/workbench/test-evidence.jso
 
 ## 6. 安全与交付限制
 
-这是本地课程工作台，不声称生产安全认证或国奖保证。无 TLS、不允许远程绑定；Cookie 因本地 HTTP 不设置 Secure。账户/审计文件需操作系统文件权限保护；审计哈希链能检测意外修改，不抵抗拥有文件写权限的人重算全链或截断尾部。
+这是本地课程工作台，不声称生产安全认证或国奖保证。无 TLS、不允许远程绑定；Cookie 因本地 HTTP 不设置 Secure。新版账号、授权、数据页、事务日志和审计均采用带认证加密；密钥由当前 Windows 账号保护。整份旧快照的回退仍不由本地审计链防止。
 
-认证与权限在 Web 服务层生效，拥有本机目录/代码执行权限的人仍能直接调用 ABC；这不是数据库 OS 级安全边界。结果展示上限 500 行，底层仍会在执行器内物化结果并受原执行器内存约束；未实现服务器游标、大规模查询取消或硬时限。
+认证与权限在 Web 服务层生效，仅得到新版加密数据文件，不能再通过文本读取或无密钥的开发入口打开；但同一个 Windows 账号下能运行程序的人可能调用系统解锁密钥。需要隔离此类使用者时，应让数据库运行在独立服务账号或远程服务器下。结果展示上限 500 行，底层仍会在执行器内物化结果并受原执行器内存约束；未实现服务器游标、大规模查询取消或硬时限。
 
 当前 UI 的查询历史和实验记录属于登录会话，退出后清除；持久审计保留。尚无账户禁用、密码恢复、审计轮转和长时间运行的容量管理。A 单页目录与单写事务限制仍然存在。
 
 组员仍需复核自己的模块、填写实际贡献、完成课堂环境验收与答辩材料。开发完成和测试通过不是竞赛获奖结论。
+
+本轮加密目录、旧库转换与预估模型的详细说明见 [2026-10-28 修改反馈](2026-10-28_changes.md)。旧明文副本不会被自动删除。
+
+查询结果区新增“过程演示”，展示视图展开、优化步骤及 C 执行统计数据流，详见 [教学可视化说明](teaching_visualization.md)。

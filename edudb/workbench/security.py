@@ -15,12 +15,36 @@ ACTIONS = {"SELECT", "INSERT", "UPDATE", "DELETE"}
 
 
 class IdentityStore:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, protector=None):
         self.path = path
-        self.data = json.loads(path.read_text("utf-8")) if path.exists() else {"users": {}}
+        self.protector=protector
+        self.data={"users":{}}
+        if path.exists():
+            raw=path.read_bytes()
+            if protector:
+                raw=protector.open(raw,b"identities")
+            try:
+                value=json.loads(raw)
+                if value.get("format")!="edudb-identities-v2":
+                    raise ValueError("unsupported format")
+                for name,user in value["users"].items():
+                    if not re.fullmatch(r"[a-z][a-z0-9_]{2,31}",name) or user["role"] not in {"admin","member"}:
+                        raise ValueError("invalid identity")
+                    if user.get("algorithm")!="pbkdf2-sha256" or type(user["iterations"]) is not int or not 100_000<=user["iterations"]<=2_000_000:
+                        raise ValueError("invalid password parameters")
+                    if len(bytes.fromhex(user["salt"]))!=16 or len(bytes.fromhex(user["digest"]))!=32:
+                        raise ValueError("invalid digest")
+                    if not isinstance(user["grants"],dict) or any(not isinstance(v,list) or not set(v)<=ACTIONS for v in user["grants"].values()):
+                        raise ValueError("invalid grants")
+                self.data={"users":value["users"]}
+            except (ValueError,KeyError,TypeError,AttributeError) as exc:
+                raise DBError("IDENTITY_CORRUPTION","账号文件损坏，不能重建为免登录状态") from exc
 
     def _save(self, data):
-        atomic_write(self.path, json.dumps(data, ensure_ascii=False).encode("utf-8"))
+        raw=json.dumps({"format":"edudb-identities-v2",**data},ensure_ascii=False).encode()
+        if self.protector:
+            raw=self.protector.seal(raw,b"identities")
+        atomic_write(self.path,raw)
         self.data = data
 
     def create(self, username, password, role="member"):
@@ -35,7 +59,7 @@ class IdentityStore:
         salt = secrets.token_hex(16)
         digest = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), ITERATIONS).hex()
         data = json.loads(json.dumps(self.data))
-        data["users"][username] = dict(salt=salt, digest=digest, iterations=ITERATIONS, role=role, grants={})
+        data["users"][username] = dict(algorithm="pbkdf2-sha256",salt=salt,digest=digest,iterations=ITERATIONS,role=role,grants={})
         self._save(data)
 
     def verify(self, username, password):
@@ -43,7 +67,8 @@ class IdentityStore:
             return False
         user = self.data["users"].get(username)
         salt = user["salt"] if user else "00" * 16
-        digest = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), ITERATIONS).hex()
+        iterations=user["iterations"] if user else ITERATIONS
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), iterations).hex()
         return hmac.compare_digest(digest, user["digest"] if user else "00" * 32) and user is not None
 
     def public(self, username):

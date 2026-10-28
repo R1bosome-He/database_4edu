@@ -35,7 +35,7 @@ class SqlSession:
         with getattr(self.runtime, "request_lock", nullcontext()):
             enabled = self.optimizer_enabled if optimizer_enabled is None else optimizer_enabled
             compiled = compile_sql(sql, self.catalog, CompileOptions(enabled))
-            if compiled.kind in {"CREATE_TABLE", "CREATE_INDEX"} and self.active_tx_id is not None:
+            if compiled.kind in {"CREATE_TABLE", "CREATE_INDEX", "CREATE_VIEW", "DROP_VIEW"} and self.active_tx_id is not None:
                 from ..c_api import DBError
                 raise DBError("DDL_TRANSACTION_CONFLICT", "DDL requires an independent transaction")
             return self._dispatch(compiled)
@@ -50,6 +50,13 @@ class SqlSession:
         if kind == "CREATE_TABLE":
             self.runtime.create_table(compiled.table_schema, compiled.constraints or None)
             return QueryResult([], [], message=f"Table {compiled.table_schema.name} created")
+        if kind == "CREATE_VIEW":
+            self.runtime.create_view(compiled.view_name,compiled.view_sql,compiled.output_columns,
+                                     compiled.view_dependencies,self.user_id)
+            return QueryResult([],[],message="视图已创建")
+        if kind == "DROP_VIEW":
+            self.runtime.drop_view(compiled.view_name,self.user_id)
+            return QueryResult([],[],message="视图已删除")
         if kind == "CREATE_INDEX":
             if hasattr(self.runtime, "create_index"):
                 info = self.runtime.create_index(compiled.index_spec, self.session_id, self.user_id)

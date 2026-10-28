@@ -13,6 +13,9 @@ what module C expects B to decide.
 """
 from __future__ import annotations
 
+from copy import deepcopy
+from dataclasses import asdict
+
 from ..c_api import Expr, PlanNode, RangeSpec
 from .catalog import CatalogView
 
@@ -57,67 +60,89 @@ def _has_subquery(expr: Expr) -> bool:
 
 
 class Optimizer:
-    def __init__(self, catalog: CatalogView) -> None:
+    def __init__(self, catalog: CatalogView, trace=False) -> None:
         self.catalog = catalog
         self._counter = 0
+        self.trace = trace
+        self.steps = []
+        self.step_count = 0
 
     def _nid(self, label: str) -> str:
         self._counter += 1
         return f"opt_{label}{self._counter}"
 
     def run(self, node: PlanNode) -> PlanNode:
-        node.children = [self.run(child) for child in node.children]
+        # Apply one real rewrite at a time. Each teaching snapshot therefore
+        # describes the actual complete tree immediately before/after a rule.
+        while True:
+            before = asdict(node) if self.trace and len(self.steps) < 32 else None
+            node, event = self._pass(node)
+            if event is None:
+                return node
+            self.step_count += 1
+            if before is not None:
+                rule, reason, affected = event
+                self.steps.append(dict(number=self.step_count, rule=rule,
+                                       reason=reason, affected_nodes=affected,
+                                       before=before, after=asdict(node)))
+
+    def _pass(self, node):
+        for i, child in enumerate(node.children):
+            replacement, event = self._pass(child)
+            if event is not None:
+                node.children[i] = replacement
+                return node, event
         if node.op == "Filter":
-            return self._pushdown(node)
+            child = node.children[0]
+            if child.op == "Projection":
+                mapping = {c.slot_id:e for c,e in zip(child.output_columns,child.expressions)}
+                # Only rename/choose direct columns. Computed columns can throw,
+                # so evaluating them on a different set of rows is not safe.
+                direct = len(mapping) == len(child.output_columns) and all(
+                    e.kind == "ColumnRef" and e.level == 0 for e in child.expressions)
+                if direct and _safe_predicate(node.expressions[0]) and _refs(node.expressions[0]) <= mapping.keys():
+                    predicate = _remap(node.expressions[0],mapping)
+                    moved = PlanNode(self._nid("filter"),"Filter",[child.children[0]],
+                                     list(child.children[0].output_columns),[predicate],
+                                     applied_rules=["projection_pushdown"])
+                    child.children = [moved]
+                    child.applied_rules = list(dict.fromkeys(child.applied_rules+["projection_pushdown"]))
+                    return child, ("projection_pushdown","投影只选择或重命名字段；按字段对应关系把外层筛选移到投影之前，不越过分组、去重或行数限制。",[node.node_id,child.node_id,moved.node_id])
+            if child.op == "Filter" and all(_safe_predicate(e) for e in node.expressions+child.expressions):
+                merged = PlanNode(self._nid("filter"),"Filter",child.children,list(node.output_columns),
+                                  [combine_and(split_and(child.expressions[0])+split_and(node.expressions[0]))],
+                                  applied_rules=["filter_merge"])
+                return merged,("filter_merge","相邻筛选均为无子查询的简单条件，将条件用 AND 合并；索引条件之外仍保留剩余筛选。",[node.node_id,child.node_id,merged.node_id])
+            if child.op in {"NestedLoopJoin","HashJoin"}:
+                keep,left,right=[],[],[]
+                left_slots,right_slots=map(_slots,child.children)
+                kind=child.properties.get("join_type","INNER")
+                for condition in split_and(node.expressions[0]):
+                    refs=_refs(condition)
+                    if not refs or not _safe_predicate(condition): keep.append(condition)
+                    elif refs <= left_slots and kind in {"INNER","LEFT"}: left.append(condition)
+                    elif refs <= right_slots and kind in {"INNER","RIGHT"}: right.append(condition)
+                    else: keep.append(condition)
+                if left or right:
+                    for i, conditions in enumerate((left,right)):
+                        if conditions:
+                            branch=child.children[i]
+                            child.children[i]=PlanNode(self._nid("filter"),"Filter",[branch],list(branch.output_columns),[combine_and(conditions)],applied_rules=["predicate_pushdown"])
+                    child.applied_rules=list(dict.fromkeys(child.applied_rules+["predicate_pushdown"]))
+                    if keep:
+                        node.expressions=[combine_and(keep)]
+                        result=node
+                    else: result=child
+                    return result,("predicate_pushdown","条件只引用一个连接输入，且满足外连接保留侧限制；先筛选该分支以减少参与连接的记录。",[node.node_id,child.node_id])
+            if child.op == "SeqScan":
+                replacement=self._index_scan(node)
+                if replacement is not node:
+                    return replacement,("index_scan","筛选列存在可用索引，比较条件可转成索引范围；使用索引定位并保留剩余条件。小表不保证更快。",[node.node_id,child.node_id,replacement.node_id])
         if node.op == "NestedLoopJoin":
-            return self._hash_join(node)
-        return node
-
-    # --- predicate pushdown --------------------------------------------
-    def _pushdown(self, filter_node: PlanNode) -> PlanNode:
-        child = filter_node.children[0]
-        conjuncts = split_and(filter_node.expressions[0])
-        if child.op in {"NestedLoopJoin", "HashJoin"}:
-            return self._push_into_join(filter_node, child, conjuncts)
-        if child.op == "SeqScan":
-            return self._index_scan(filter_node)
-        return filter_node
-
-    def _push_into_join(self, filter_node, join, conjuncts):
-        left, right = join.children
-        left_slots, right_slots = _slots(left), _slots(right)
-        join_type = join.properties.get("join_type", "INNER")
-        keep, to_left, to_right = [], [], []
-        for conjunct in conjuncts:
-            if _has_subquery(conjunct):
-                keep.append(conjunct)
-                continue
-            refs = _refs(conjunct)
-            if refs <= left_slots and join_type in {"INNER", "LEFT"}:
-                to_left.append(conjunct)
-            elif refs <= right_slots and join_type in {"INNER", "RIGHT"}:
-                to_right.append(conjunct)
-            else:
-                keep.append(conjunct)
-        if to_left:
-            join.children[0] = self._attach(left, to_left)
-        if to_right:
-            join.children[1] = self._attach(right, to_right)
-        join = self._hash_join(join) if join.op == "NestedLoopJoin" else join
-        if not keep:
-            return join
-        filter_node.children = [join]
-        filter_node.expressions = [combine_and(keep)]
-        return filter_node
-
-    def _attach(self, node: PlanNode, conjuncts: list[Expr]) -> PlanNode:
-        wrapper = PlanNode(self._nid("filter"), "Filter", [node], list(node.output_columns),
-                           [combine_and(conjuncts)])
-        if node.op in {"NestedLoopJoin", "HashJoin"}:
-            return self._push_into_join(wrapper, node, conjuncts)
-        if node.op == "SeqScan":
-            return self._index_scan(wrapper)
-        return wrapper
+            replacement=self._hash_join(node)
+            if replacement is not node:
+                return replacement,("hash_join","连接条件包含两侧字段的等值比较；建立哈希表并探测，同时保留完整连接条件及外连接语义。",[node.node_id,replacement.node_id])
+        return node,None
 
     # --- index selection -----------------------------------------------
     def _index_scan(self, filter_node: PlanNode) -> PlanNode:
@@ -160,10 +185,18 @@ class Optimizer:
             if op == "=":
                 return RangeSpec(value, value, True, True), {i}
             if op in {">", ">="}:
-                lower, lower_inc, has_bound = value, op == ">=", True
+                if lower is None or value > lower:
+                    lower, lower_inc = value, op == ">="
+                elif value == lower:
+                    lower_inc = lower_inc and op == ">="
+                has_bound = True
                 used.add(i)
             elif op in {"<", "<="}:
-                upper, upper_inc, has_bound = value, op == "<=", True
+                if upper is None or value < upper:
+                    upper, upper_inc = value, op == "<="
+                elif value == upper:
+                    upper_inc = upper_inc and op == "<="
+                has_bound = True
                 used.add(i)
         if not has_bound:
             return None
@@ -208,3 +241,17 @@ class Optimizer:
 
 def _is_literal(expr: Expr) -> bool:
     return expr.kind == "Literal" and expr.value is not None
+
+
+def _safe_predicate(expr):
+    if expr.kind == "Literal": return True
+    if expr.kind == "ColumnRef": return expr.level == 0
+    return (expr.kind == "Binary" and expr.operator in _COMPARISONS | {"AND","OR"}
+            and all(_safe_predicate(arg) for arg in expr.args))
+
+
+def _remap(expr,mapping):
+    if expr.kind == "ColumnRef": return deepcopy(mapping[expr.slot_id])
+    result=deepcopy(expr)
+    result.args=[_remap(arg,mapping) for arg in expr.args]
+    return result

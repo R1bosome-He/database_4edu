@@ -107,6 +107,7 @@ class QueryResult:
     plan: PlanNode | None = None
     metrics: Metrics = field(default_factory=Metrics)
     message: str | None = None
+    teaching: dict | None = None
 
 
 @dataclass(frozen=True)

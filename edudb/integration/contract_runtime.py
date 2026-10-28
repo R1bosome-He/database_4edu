@@ -319,9 +319,12 @@ class Records:
 
 class ContractRuntime:
     """Single-process runtime; SqlSession admission is serialized, transactions use C locks."""
-    def __init__(self, root, buffer_pages=16):
+    def __init__(self, root, buffer_pages=16, protector=None):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
+        protection_marker=self.root/"protected.json"
+        if protection_marker.exists() and protector is None:
+            raise c.DBError("ENCRYPTION_REQUIRED","此数据库已加密，请通过登录工作台打开")
         if (self.root / "c_pages_v1").exists():
             raise c.DBError("FORMAT_MISMATCH", "Use a new directory for integrated A storage")
         if (self.root / "a_storage" / "storage.json").exists() and not (self.root / "wal" / "contract.wal").exists():
@@ -343,13 +346,16 @@ class ContractRuntime:
                 import fcntl
                 fcntl.flock(self._lockfile, fcntl.LOCK_EX | fcntl.LOCK_NB)
             self.pages = PageAdapter()
-            self.wal = WAL(self.root / "wal" / "contract.wal")
+            self.wal = WAL(self.root / "wal" / "contract.wal",protector)
             self.transactions = Transactions(self.pages, self.wal)
             self.log = LogAdapter(self.wal, self.transactions)
             with boundary():
                 self.storage = StorageService(self.root / "a_storage", self.log, self.transactions,
                                               capacity=max(2, buffer_pages), normalize_name=str.casefold,
-                                              supported_constraints=frozenset({"PRIMARY_KEY", "UNIQUE", "CHECK", "FOREIGN_KEY"}))
+                                              supported_constraints=frozenset({"PRIMARY_KEY", "UNIQUE", "CHECK", "FOREIGN_KEY"}),protector=protector)
+            if protector and not protection_marker.exists():
+                from ..fileio import atomic_write
+                atomic_write(protection_marker,b'{"format":"edudb-protected-v1"}')
             self.pages.storage, self.pages.transactions, self.pages.log = self.storage, self.transactions, self.log
             self.recovery_summary = self.transactions.recover()
             with boundary():
@@ -386,6 +392,22 @@ class ContractRuntime:
             ctx = c.ExecutionContext(uuid.uuid4().hex, tx.session_id, user_id, tx.id)
             # Scope owns rollback; do not use executor.create_index's second rollback.
             return self.indexes.create_index(spec, ctx)
+
+    def create_view(self,name,query_sql,columns,dependencies,owner_id):
+        with self.request_lock, boundary():
+            identities=[]
+            for kind, object_name in dependencies:
+                obj=self.storage.get_view(object_name) if kind=="VIEW" else self.storage.get_table(object_name)
+                identities.append(obj.id)
+            view=a.ViewDef("v_"+uuid.uuid4().hex,name,owner_id,{"sql":query_sql},
+                           [a.ResultColumn(c.slot_id,c.name,c.type,c.nullable) for c in columns],
+                           sorted(set(identities)),"INVOKER")
+            self.storage.apply_catalog_command(a.CatalogCommand("CREATE_VIEW",owner_id,view=view))
+
+    def drop_view(self,name,owner_id):
+        with self.request_lock, boundary():
+            view=self.storage.get_view(name)
+            self.storage.apply_catalog_command(a.CatalogCommand("DROP_VIEW",owner_id,object_id=view.id))
 
     def context(self, session_id="local", user_id="test", memory_limit_bytes=64 * 1024 * 1024):
         tx = self.transactions.begin(session_id)

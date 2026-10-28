@@ -20,6 +20,8 @@ from ..sql.parser import parse
 from .audit import AuditLog, fingerprint, redact
 from .security import IdentityStore
 from .evidence import load_evidence, source_hash
+from ..protection import FileProtector
+from ..sql.estimates import estimate_plan
 
 
 @dataclass
@@ -36,13 +38,17 @@ class Session:
 class Workbench:
     def __init__(self, root, admin_password=None, demo=False, evidence_path=None):
         self.root = Path(root)
-        self.runtime = ContractRuntime(self.root / "database", buffer_pages=16)
+        existing=(self.root/"database"/"a_storage"/"storage.json").exists()
+        if existing and not (self.root/"security"/"users.vault").exists():
+            raise DBError("MIGRATION_REQUIRED","已有数据库缺少保护账号文件，请保留原目录并运行迁移工具")
+        self.protector=FileProtector(self.root)
+        self.runtime = ContractRuntime(self.root / "database", buffer_pages=16,protector=self.protector)
         self.lock = self.runtime.request_lock
         self.sessions = {}
         self.failures = {}
         try:
-            self.identities = IdentityStore(self.root / "security" / "users.json")
-            self.audit = AuditLog(self.root / "security" / "audit.jsonl")
+            self.identities = IdentityStore(self.root / "security" / "users.vault",self.protector)
+            self.audit = AuditLog(self.root / "security" / "audit.vault",self.protector)
             self.bootstrap_password = None
             if not self.identities.data["users"]:
                 self.bootstrap_password = admin_password or secrets.token_urlsafe(16)
@@ -67,17 +73,25 @@ class Workbench:
 
     def _seed(self):
         sql = SqlSession(self.runtime)
-        sql.execute("CREATE TABLE students (id INT PRIMARY KEY, name TEXT NOT NULL, department TEXT, score INT, note TEXT)")
-        names = ["林知夏", "陈予安", "沈一舟", "许清和", "周映宁", "江亦辰", "顾思远", "陆星禾"]
-        departments = ["计算机科学", "信息安全", "软件工程", "人工智能"]
-        for start in range(0, 240, 40):
-            values = ",".join(f"({i},'{names[i % 8]}','{departments[i % 4]}',{60+i%41},'{('database research ' * 8).strip()}')"
-                              for i in range(start, start + 40))
-            sql.execute("INSERT INTO students VALUES " + values)
+        sql.execute("CREATE TABLE students (id INT PRIMARY KEY, name TEXT NOT NULL, department TEXT, score INT)")
+        from ..demo_data import STUDENTS, ENROLLMENTS, sql_rows
+        sql.execute("INSERT INTO students VALUES "+sql_rows(STUDENTS))
         sql.execute("CREATE INDEX idx_students_id ON students(id)")
         sql.execute("CREATE TABLE enrollments (student_id INT, course TEXT, credits INT)")
-        sql.execute("INSERT INTO enrollments VALUES " + ",".join(f"({i},'数据库原理与安全',4)" for i in range(24)))
-        self.audit.append("SEED", "admin", dataset="coursework-v1", rows=264)
+        sql.execute("INSERT INTO enrollments VALUES "+sql_rows(ENROLLMENTS))
+        self.audit.append("SEED", "admin", dataset="classroom-v2", rows=len(STUDENTS)+len(ENROLLMENTS))
+
+    def register(self,username,password,peer="local"):
+        with self.lock:
+            now=time.monotonic()
+            key="register:"+peer
+            recent=[t for t in self.failures.get(key,[]) if now-t<60]
+            if len(recent)>=5:
+                raise DBError("RATE_LIMITED","注册请求过多，请稍后再试")
+            self.failures[key]=recent+[now]
+            self.identities.create(username,password,"member")
+            self.audit.append("REGISTER",username)
+            return {"ok":True,"message":"账号已创建，请登录；数据访问权限由管理员授予"}
 
     def _drop(self, token):
         session = self.sessions.pop(token, None)
@@ -127,26 +141,29 @@ class Workbench:
             raise DBError("FORBIDDEN", "Administrator permission required")
 
     def authorize(self, session, compiled):
-        if compiled.kind in {"CREATE_TABLE", "CREATE_INDEX"}:
+        if compiled.kind in {"CREATE_TABLE", "CREATE_INDEX", "CREATE_VIEW", "DROP_VIEW"}:
             self.admin(session)
         for privilege in compiled.required_privileges:
             if privilege.action == "CREATE":
                 self.admin(session)
                 continue
-            table = self.runtime.storage.get_table(privilege.object_id)
+            table = self.runtime.storage.get_view(privilege.object_id) if privilege.object_type=="VIEW" else self.runtime.storage.get_table(privilege.object_id)
             if not self.identities.allowed(session.username, table.id, privilege.action):
                 raise DBError("FORBIDDEN", f"{privilege.action} denied on {table.name}")
 
-    def _execute(self, session, sql, optimizer=True):
+    def _execute(self, session, sql, optimizer=True, teaching=True):
         if not isinstance(sql, str) or not sql.strip() or len(sql) > 32000:
             raise DBError("INVALID_SQL", "SQL must contain 1-32000 characters")
         started = time.perf_counter()
-        compiled = compile_sql(sql, session.sql.catalog, CompileOptions(optimizer))
+        compiled = compile_sql(sql, session.sql.catalog, CompileOptions(optimizer,teaching=teaching))
         planning_ms = (time.perf_counter() - started) * 1000
         self.authorize(session, compiled)
-        if compiled.kind in {"CREATE_TABLE", "CREATE_INDEX"} and session.sql.active_tx_id:
+        if compiled.kind in {"CREATE_TABLE", "CREATE_INDEX", "CREATE_VIEW", "DROP_VIEW"} and session.sql.active_tx_id:
             raise DBError("DDL_TRANSACTION_CONFLICT", "Finish the current transaction before DDL")
         result = session.sql._dispatch(compiled)
+        result.teaching = compiled.teaching
+        if result.teaching and compiled.kind == "EXPLAIN":
+            result.teaching["execution_kind"]="plan_only"
         result.metrics.planning_ms = planning_ms
         if compiled.kind == "EXPLAIN":
             result.plan = compiled.plan
@@ -180,11 +197,15 @@ class Workbench:
             session = self.session(token)
             tables = []
             for obj in self.runtime.storage.list_objects():
-                if obj.kind != "TABLE" or not self.identities.allowed(session.username, obj.id, "SELECT"):
+                if obj.kind not in {"TABLE","VIEW"} or not self.identities.allowed(session.username, obj.id, "SELECT"):
                     continue
-                table = self.runtime.storage.get_table(obj.id)
-                tables.append(dict(id=table.id, name=table.name, columns=[asdict(c) for c in table.columns],
-                                   indexes=[asdict(i) for i in table.indexes]))
+                if obj.kind=="VIEW":
+                    view=self.runtime.storage.get_view(obj.id)
+                    tables.append(dict(id=view.id,name=view.name,kind="VIEW",columns=[dict(id=c.slot_id,name=c.name,type=c.type,nullable=c.nullable) for c in view.output_columns],indexes=[]))
+                else:
+                    table = self.runtime.storage.get_table(obj.id)
+                    tables.append(dict(id=table.id, name=table.name,kind="TABLE",columns=[asdict(c) for c in table.columns],
+                                       indexes=[asdict(i) for i in table.indexes]))
             diagnostics = self.runtime.storage.diagnostics()
             return dict(user=self.identities.public(session.username), csrf=session.csrf, tables=tables,
                         transaction_active=bool(session.sql.active_tx_id), history=session.history,
@@ -195,6 +216,30 @@ class Workbench:
     @staticmethod
     def _bag(rows):
         return Counter(json.dumps(row, ensure_ascii=False, sort_keys=True) for row in rows)
+
+    def estimate(self,token,sql):
+        with self.lock:
+            session=self.session(token)
+            if self.runtime.transactions.has_active_transactions():
+                raise DBError("EXPERIMENT_BUSY","请先结束所有活动事务")
+            plans={}
+            for mode,enabled in (("off",False),("on",True)):
+                compiled=compile_sql(sql,session.sql.catalog,CompileOptions(enabled))
+                if compiled.kind!="SELECT":
+                    raise DBError("READ_ONLY_EXPERIMENT","仅能预估 SELECT 查询")
+                self.authorize(session,compiled)
+                plans[mode]=compiled.plan
+            statistics={}
+            for name in self.runtime.executor._tables(plans["off"]):
+                table=self.runtime.storage.get_table(name)
+                stat=self.runtime.storage.get_statistics(table.id)
+                statistics[name]=dict(rows=stat.row_count,pages=stat.page_count,
+                                      unique_columns=[c.name for c in table.columns if any(r.kind=="PRIMARY_KEY" and r.columns==[c.id] for r in table.constraints) or any(i.unique and i.column_ids==[c.id] for i in table.indexes)],
+                                      unique_indexes=[i.id for i in table.indexes if i.unique or i.column_ids==[next((r.columns[0] for r in table.constraints if r.kind=="PRIMARY_KEY"),None)]])
+            off=estimate_plan(plans["off"],statistics)
+            on=estimate_plan(plans["on"],statistics)
+            return dict(phase="before_execution",off=off,on=on,statistics=statistics,
+                        assumptions=["使用实际表行数和页数；收集统计信息会读取数据页，但未执行目标查询", "普通过滤保留约三分之一，范围约四分之一，非唯一等值约十分之一；没有直方图", "计算量是行级操作的教学估算，不是毫秒预测；内存按保留行数估算", "相关子查询、数据倾斜和缓存差异可能使估算偏差增大"])
 
     def compare(self, token, sql, repeats=3, cache="cold"):
         with self.lock:
@@ -207,6 +252,7 @@ class Workbench:
             if compiled.kind != "SELECT":
                 raise DBError("READ_ONLY_EXPERIMENT", "COMPARE accepts SELECT only")
             self.authorize(session, compiled)
+            prediction=self.estimate(token,sql)
             ordered = bool(parse(sql).order_by)
             self.audit.append("COMPARE_REQUEST", session.username, sql_redacted=redact(sql), sql_hash=fingerprint(sql))
             samples, plans, equivalent = [], {}, True
@@ -217,8 +263,8 @@ class Workbench:
                         mode = "on" if enabled else "off"
                         self.runtime.pages.reset_cache()
                         if cache == "warm":
-                            self._execute(session, sql, enabled)
-                        result = self._execute(session, sql, enabled)
+                            self._execute(session, sql, enabled,teaching=False)
+                        result = self._execute(session, sql, enabled,teaching=False)
                         results[mode] = result.rows
                         plans[mode] = asdict(result.plan)
                         metrics = asdict(result.metrics)
@@ -231,7 +277,7 @@ class Workbench:
                 report = dict(id=uuid.uuid4().hex, time=time.time(), sql_redacted=redact(sql), sql_hash=fingerprint(sql),
                               cache=cache, repeats=repeats, equivalent=equivalent, ordered=ordered,
                               comparison="sequence" if ordered else "multiset", samples=samples, summary=summary, plans=plans,
-                              buffer_capacity=16, version=self.version)
+                              buffer_capacity=16, version=self.version,prediction=prediction)
                 session.comparisons.insert(0, report)
                 del session.comparisons[10:]
                 self.audit.append("COMPARE_RESULT", session.username, equivalent, experiment_id=report["id"], summary=summary)
@@ -260,7 +306,10 @@ class Workbench:
             self.admin(session)
             if self.runtime.transactions.has_active_transactions():
                 raise DBError("ACTIVE_TRANSACTIONS", "Finish transactions before changing privileges")
-            table = self.runtime.storage.get_table(table_id)
+            try:
+                table = self.runtime.storage.get_table(table_id)
+            except Exception:
+                table = self.runtime.storage.get_view(table_id)
             self.audit.append("GRANT_REQUEST", session.username, target=username, table_id=table.id)
             self.identities.grant(username, table.id, actions)
             self.audit.append("GRANT", session.username, target=username, table_id=table.id, actions=actions)

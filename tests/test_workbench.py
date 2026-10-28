@@ -37,7 +37,7 @@ class WorkbenchTest(unittest.TestCase):
         return self.app.login("analyst", "Analyst-password-123")
 
     def test_identity_password_hash_and_no_default_auth(self):
-        raw = (self.root / "security/users.json").read_text()
+        raw = (self.root / "security/users.vault").read_bytes().hex()
         self.assertNotIn("A-test-password", raw)
         self.code("UNAUTHENTICATED", self.app.state, "")
         self.code("INVALID_CREDENTIALS", self.app.login, "admin", "wrong")
@@ -114,13 +114,17 @@ class WorkbenchTest(unittest.TestCase):
         self.assertNotIn("private-value", raw)
         self.assertNotIn("A-test-password", raw)
         self.assertEqual(report["tests"]["status"], "not_run")
-        audit = (self.root / "security/audit.jsonl").read_text()
+        audit = (self.root / "security/audit.vault").read_text()
         self.assertNotIn("private-value", audit)
         self.assertNotIn("A-test-password", audit)
-        self.assertEqual(AuditLog(self.root / "security/audit.jsonl").tail, self.app.audit.tail)
+        self.assertEqual(AuditLog(self.root / "security/audit.vault",self.app.protector).tail, self.app.audit.tail)
         path = self.root / "tampered.jsonl"
-        path.write_text(audit.replace("SQL_REQUEST", "SQL_CHANGED", 1))
-        self.code("AUDIT_CORRUPTION", AuditLog, path)
+        import base64
+        lines=audit.splitlines()
+        raw=bytearray(base64.b64decode(lines[0]));raw[-1]^=1
+        lines[0]=base64.b64encode(raw).decode()
+        path.write_text("\n".join(lines)+"\n")
+        self.code("FILE_AUTHENTICATION_FAILED", AuditLog, path,self.app.protector)
 
     def test_failed_sql_is_audited_and_does_not_return_old_rows(self):
         self.code("SYNTAX_ERROR", self.app.execute, self.token, "broken SQL")

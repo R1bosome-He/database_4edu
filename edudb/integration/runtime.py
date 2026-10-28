@@ -15,6 +15,7 @@ from .store import RecordAdapter, ReferencePageStore
 
 CATALOG_KEY = PageKey("cm_catalog", 0)
 CONSTRAINTS_KEY = PageKey("cm_constraints", 0)
+VIEWS_KEY = PageKey("cm_views",0)
 
 
 class CatalogBridge:
@@ -33,6 +34,15 @@ class CatalogBridge:
     def tables(self):
         image = self.pages.read_image(CATALOG_KEY)
         return tuple(TableSchema.from_dict(v) for _, v in sorted((image["payload"] if image else {}).items()))
+
+    def get_view(self,name):
+        from ..sql.catalog import ViewInfo, ColumnInfo
+        image=self.pages.read_image(VIEWS_KEY)
+        value=(image["payload"] if image else {}).get(name)
+        if value is None:
+            return None
+        return ViewInfo(value["id"],name,value["sql"],
+                        [ColumnInfo(c["name"],c["type"],c["nullable"]) for c in value["columns"]],value["dependencies"])
 
     def constraints(self, table_id):
         image = self.pages.read_image(CONSTRAINTS_KEY)
@@ -86,6 +96,41 @@ class Runtime:
         tx = self.transactions.begin(session_id)
         return ExecutionContext(uuid.uuid4().hex, session_id, user_id, tx.id,
                                 memory_limit_bytes=memory_limit_bytes)
+
+    def _change_views(self,edit):
+        if any(t.state=="ACTIVE" for t in self.transactions.transactions.values()):
+            raise DBError("DDL_TRANSACTION_CONFLICT","请先结束活动事务")
+        ctx=self.context("ddl_"+uuid.uuid4().hex)
+        try:
+            self.transactions.acquire_lock(ctx.tx_id,"catalog:schema","X")
+            before=self.pages.read_image(VIEWS_KEY)
+            values=dict(before["payload"]) if before else {}
+            edit(values)
+            after=dict(kind="CATALOG",payload=values)
+            self.pages.validate_image(after)
+            self.transactions.write_change(ctx.tx_id,PageChange(VIEWS_KEY,before,after))
+            self.transactions.commit(ctx.tx_id)
+        except Exception:
+            if not self.transactions.needs_recovery:
+                self.transactions.rollback(ctx.tx_id)
+            raise
+
+    def create_view(self,name,query_sql,columns,dependencies,owner_id):
+        def edit(values):
+            if name in values or name in {t.name for t in self.catalog.tables()}:
+                raise DBError("OBJECT_EXISTS","同名对象已存在")
+            values[name]=dict(id="v_"+uuid.uuid4().hex,sql=query_sql,columns=[asdict(c) for c in columns],
+                              dependencies=[n for _,n in dependencies],owner_id=owner_id)
+        self._change_views(edit)
+
+    def drop_view(self,name,owner_id):
+        def edit(values):
+            if name not in values:
+                raise DBError("OBJECT_NOT_FOUND","视图不存在")
+            if any(name in v["dependencies"] for v in values.values()):
+                raise DBError("OBJECT_REFERENCED","视图仍被其他视图引用")
+            del values[name]
+        self._change_views(edit)
 
     def create_table(self, schema: TableSchema, constraints: list[Constraint] | None = None):
         """Independent DDL transaction for bootstrap/testing. No SQL/auth layer."""

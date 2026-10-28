@@ -16,8 +16,9 @@ MAX_FRAME = 32 * 1024 * 1024
 
 
 class WAL:
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, protector=None) -> None:
         self.path = Path(path)
+        self.protector=protector
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self.records: list[dict[str, Any]] = []
@@ -51,6 +52,9 @@ class WAL:
             if zlib.crc32(raw) != checksum:
                 raise DBError("WAL_CORRUPTION", f"WAL checksum mismatch at {offset}")
             try:
+                if self.protector:
+                    from ..protection import wal_context
+                    raw=self.protector.open(raw,wal_context(len(self.records)+1))
                 record = json.loads(raw)
                 if record["lsn"] != len(self.records) + 1:
                     raise ValueError("Non-contiguous LSN")
@@ -74,6 +78,9 @@ class WAL:
                 raise DBError("WAL_FAILED", "WAL requires reopen/recovery")
             record = {**record_without_lsn, "lsn": len(self.records) + 1}
             raw = json.dumps(record, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+            if self.protector:
+                from ..protection import wal_context
+                raw=self.protector.seal(raw,wal_context(record["lsn"]))
             if len(raw) > MAX_FRAME:
                 raise DBError("LOG_TOO_LARGE", "WAL frame exceeds limit")
             frame = HEADER.pack(len(raw), zlib.crc32(raw)) + raw

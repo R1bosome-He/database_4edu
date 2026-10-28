@@ -102,6 +102,8 @@ class Planner:
         self.catalog = catalog
         self._counter = 0
         self.privileges: list[Privilege] = []
+        self._view_stack = []
+        self.view_expansions = []
 
     # --- id / helper ----------------------------------------------------
     def _nid(self, label: str) -> str:
@@ -111,6 +113,8 @@ class Planner:
     def _require_table(self, name: str, pos: int = 0) -> TableInfo:
         info = self.catalog.get_table(name)
         if info is None:
+            if getattr(self.catalog,"get_view",lambda n:None)(name) is not None:
+                raise DBError("READ_ONLY_VIEW","视图只允许查询，请修改原始表",position=pos)
             raise DBError("UNKNOWN_TABLE", f"Unknown table {name!r}", position=pos)
         return info
 
@@ -324,6 +328,29 @@ class Planner:
         raise DBError("INTERNAL_ERROR", "Unknown FROM node")
 
     def _plan_table(self, ref: ast.TableRef):
+        getter = getattr(self.catalog, "get_view", None)
+        view = getter(ref.name) if getter else None
+        if view is not None:
+            if ref.name in self._view_stack or len(self._view_stack) >= 32:
+                raise DBError("VIEW_CYCLE", "视图依赖循环或嵌套过深")
+            from .parser import parse
+            self._need("VIEW", view.name, "SELECT")
+            parent=self._view_stack[-1] if self._view_stack else None
+            depth=len(self._view_stack)
+            self._view_stack.append(ref.name)
+            try:
+                inner, outputs = self.plan_select(parse(view.query_sql))
+            finally:
+                self._view_stack.pop()
+            alias = ref.alias or view.name
+            columns = [BoundColumn(alias,c.name,f"{alias}.{c.name}",c.type,c.nullable) for c in outputs]
+            out = [ResultColumn(c.slot_id,c.name,c.type,c.nullable) for c in columns]
+            node = PlanNode(self._nid("view"), "Projection", [inner], out,
+                            [Expr("ColumnRef",slot_id=c.slot_id) for c in outputs],
+                            {"view_name":view.name,"view_alias":alias})
+            self.view_expansions.append(dict(view_id=view.id,view_name=view.name,alias=alias,parent=parent,depth=depth,query_sql=view.query_sql,node_id=node.node_id,
+                columns=[dict(output=c.name,slot=c.slot_id,source=source.slot_id,origins=_column_sources(inner,source.slot_id)) for c,source in zip(columns,outputs)]))
+            return node, columns
         info = self._require_table(ref.name, ref.pos)
         alias = ref.alias or info.name
         self._need("TABLE", info.name, "SELECT")
@@ -384,6 +411,11 @@ class Planner:
         raise DBError("INTERNAL_ERROR", f"Cannot bind {type(node).__name__}")
 
     def _bind_unary(self, node, scope):
+        if node.op == "-" and isinstance(node.operand, ast.Literal) and type(node.operand.value) is int:
+            value = -node.operand.value
+            if not -(2**63) <= value < 2**63:
+                raise DBError("NUMERIC_OVERFLOW", "整数超出有符号 64 位范围", position=node.pos)
+            return Bound(Expr("Literal", value), "INT", False)
         operand = self._bind(node.operand, scope)
         if node.op == "NOT":
             if operand.type not in {"BOOL", "NULL"}:
@@ -735,3 +767,20 @@ def contains_aggregate(node) -> bool:
         return contains_aggregate(node.operand) or any(contains_aggregate(i) for i in node.items)
     # Subqueries are opaque: their aggregates belong to the inner query.
     return False
+
+
+def _column_sources(node,slot):
+    """Follow field producers for teaching; never read rows or change the plan."""
+    if node.op == "SeqScan":
+        column=next((c for c in node.output_columns if c.slot_id==slot),None)
+        return [node.properties["table_id"]+"."+column.name] if column else []
+    if node.op in {"Projection","Aggregate"}:
+        position=next((i for i,c in enumerate(node.output_columns) if c.slot_id==slot),None)
+        if position is not None:
+            refs=[]
+            def collect(expr):
+                if expr.kind=="ColumnRef" and expr.level==0: refs.append(expr.slot_id)
+                for arg in expr.args: collect(arg)
+            collect(node.expressions[position])
+            return sorted({source for ref in refs for child in node.children for source in _column_sources(child,ref)})
+    return sorted({source for child in node.children for source in _column_sources(child,slot)})

@@ -41,6 +41,15 @@ class TableInfo:
         return None
 
 
+@dataclass
+class ViewInfo:
+    id: str
+    name: str
+    query_sql: str
+    columns: list[ColumnInfo]
+    dependencies: list[str]
+
+
 class CatalogView(Protocol):
     def get_table(self, name: str) -> TableInfo | None: ...
 
@@ -50,6 +59,10 @@ class InMemoryCatalog:
 
     def __init__(self) -> None:
         self._tables: dict[str, TableInfo] = {}
+        self._views: dict[str, ViewInfo] = {}
+
+    def get_view(self, name):
+        return self._views.get(name)
 
     def add_table(self, info: TableInfo) -> TableInfo:
         self._tables[info.name] = info
@@ -74,6 +87,20 @@ class RuntimeCatalog:
 
     def __init__(self, runtime) -> None:
         self.runtime = runtime
+
+    def get_view(self, name):
+        if hasattr(self.runtime, "storage"):
+            from ..contracts import DBError as StorageError
+            try:
+                view = self.runtime.storage.get_view(name)
+            except StorageError as error:
+                if error.code == "OBJECT_NOT_FOUND":
+                    return None
+                raise DBError(error.code, error.message) from error
+            return ViewInfo(view.id, view.name, view.query_ast["sql"],
+                            [ColumnInfo(c.name,c.type,c.nullable) for c in view.output_columns], view.dependencies)
+        getter = getattr(self.runtime.catalog, "get_view", None)
+        return getter(name) if getter else None
 
     def get_table(self, name: str) -> TableInfo | None:
         try:

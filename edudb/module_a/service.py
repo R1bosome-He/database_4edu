@@ -62,6 +62,7 @@ class StorageService:
         self, root: str | Path, log: LogService, transactions: TransactionService,
         *, capacity: int = 16, normalize_name: Callable[[str], str] | None = None,
         supported_constraints: frozenset[str] = frozenset(),
+        protector=None,
     ) -> None:
         self._mutex = threading.RLock()
         if type(capacity) is not int or capacity < 2:
@@ -71,7 +72,7 @@ class StorageService:
             if any(not callable(getattr(service, name, None)) for name in methods):
                 raise DBError("INVALID_ARGUMENT", "Missing required C service methods")
         self._root = Path(root)
-        self._files = PageFiles(self._root)
+        self._files = PageFiles(self._root,protector)
         self._log = log
         self._transactions = transactions
         self._capacity = capacity
