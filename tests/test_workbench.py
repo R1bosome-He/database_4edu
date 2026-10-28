@@ -7,6 +7,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from edudb.c_api import DBError
 from edudb.web import Server
@@ -43,10 +44,18 @@ class WorkbenchTest(unittest.TestCase):
         self.code("INVALID_CREDENTIALS", self.app.login, "admin", "wrong")
         self.assertEqual(self.app.state(self.token)["user"]["role"], "admin")
 
-    def test_rate_limit_login(self):
-        for _ in range(5):
+    def test_login_retries_do_not_block_correct_password(self):
+        for _ in range(7):
             self.code("INVALID_CREDENTIALS", self.app.login, "admin", "wrong", "test-peer")
-        self.code("RATE_LIMITED", self.app.login, "admin", "A-test-password-123!", "test-peer")
+        token = self.app.login("admin", "A-test-password-123!", "test-peer")
+        self.assertEqual(self.app.state(token)["user"]["role"], "admin")
+
+    def test_registration_retries_are_not_rate_limited(self):
+        for index in range(6):
+            result = self.app.register(f"member{index}", "Member-password-123!", "register-peer")
+            self.assertTrue(result["ok"])
+        token = self.app.login("member5", "Member-password-123!", "register-peer")
+        self.assertEqual(self.app.state(token)["user"]["role"], "member")
 
     def test_table_level_grant_and_revoke(self):
         member = self.member()
@@ -166,15 +175,37 @@ class WorkbenchTest(unittest.TestCase):
         table = self.app.runtime.storage.get_table("students")
         self.app.grant(self.token, "analyst", table.id, ["SELECT"])
         self.app.logout(member)
+        previous_users = json.loads(json.dumps(self.app.identities.data["users"]))
         self.app.close()
         reopened = Workbench(self.root)
         try:
             token = reopened.login("analyst", "Analyst-password-123")
             self.assertEqual(len(reopened.execute(token, "SELECT * FROM students")["rows"]), 2)
             self.assertTrue(any(e["action"] == "GRANT" for e in reopened.audit.events))
-            self.assertIsNone(reopened.bootstrap_password)
+            self.assertTrue(reopened.bootstrap_password)
+            self.assertNotEqual(reopened.bootstrap_password, "A-test-password-123!")
+            self.assertEqual(set(reopened.identities.data["users"]), set(previous_users))
+            self.assertEqual(reopened.identities.data["users"]["analyst"], previous_users["analyst"])
+            self.assertEqual(reopened.identities.public("admin"),
+                             {"username": "admin", "role": previous_users["admin"]["role"],
+                              "grants": previous_users["admin"]["grants"]})
+            self.code("INVALID_CREDENTIALS", reopened.login, "admin", "A-test-password-123!")
+            admin_token = reopened.login("admin", reopened.bootstrap_password)
+            self.assertEqual(reopened.state(admin_token)["user"]["role"], "admin")
+            self.assertTrue(any(e["action"] == "ADMIN_PASSWORD_ROTATED" for e in reopened.audit.events))
         finally:
             reopened.close()
+
+    def test_failed_admin_password_save_preserves_existing_credentials(self):
+        before = json.loads(json.dumps(self.app.identities.data))
+        persisted = self.app.identities.path.read_bytes()
+        with patch("edudb.workbench.security.atomic_write", side_effect=OSError("simulated write failure")):
+            with self.assertRaises(OSError):
+                self.app.identities.reset_password("admin", "Replacement-password-123!")
+        self.assertEqual(self.app.identities.data, before)
+        self.assertEqual(self.app.identities.path.read_bytes(), persisted)
+        self.assertTrue(self.app.identities.verify("admin", "A-test-password-123!"))
+        self.assertFalse(self.app.identities.verify("admin", "Replacement-password-123!"))
 
     def test_http_auth_origin_csrf_headers_and_static_allowlist(self):
         server = Server(("127.0.0.1", 0), self.app)

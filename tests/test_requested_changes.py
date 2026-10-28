@@ -169,7 +169,8 @@ class RequestedWorkbenchChanges(unittest.TestCase):
             self.assertNotIn(b"Administrator-test",raw)
         self.app.close()
         self.app=Workbench(self.root)
-        token=self.app.login("admin","Administrator-test-123")
+        self.assertFalse(self.app.identities.verify("admin","Administrator-test-123"))
+        token=self.app.login("admin",self.app.bootstrap_password)
         self.assertEqual(self.app.execute(token,"SELECT name FROM students WHERE id=21")["rows"],[["敏感姓名测试Z9"]])
 
     def test_tampering_and_missing_identity_do_not_reset_admin(self):
@@ -242,7 +243,8 @@ os._exit(42)
                 for repeat in range(2):
                     app=Workbench(folder)
                     try:
-                        token=app.login("admin","Crash-password-123")
+                        self.assertFalse(app.identities.verify("admin","Crash-password-123"))
+                        token=app.login("admin",app.bootstrap_password)
                         self.assertEqual(app.execute(token,"SELECT name FROM students WHERE id=5")["rows"],[["赵六"]])
                         self.assertEqual(app.execute(token,"SELECT id FROM students WHERE id=101")["rows"],[])
                     finally: app.close()
@@ -264,8 +266,11 @@ os._exit(42)
             self.assertTrue(result["source_unchanged"])
             after={str(p.relative_to(source)):hashlib.sha256(p.read_bytes()).hexdigest() for p in source.rglob('*') if p.is_file()}
             self.assertEqual(before,after)
+            migrated=IdentityStore(target/"security/users.vault",FileProtector(target))
+            self.assertTrue(migrated.verify("admin",password))
             app=Workbench(target)
             try:
-                token=app.login("admin",password)
+                self.assertFalse(app.identities.verify("admin",password))
+                token=app.login("admin",app.bootstrap_password)
                 self.assertEqual(app.execute(token,"SELECT * FROM t")["rows"],[[1,"旧数据保留"]])
             finally: app.close()

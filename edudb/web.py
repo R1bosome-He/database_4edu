@@ -175,7 +175,7 @@ def main():
         server = Server(("127.0.0.1", args.port), app)
         print(f"EduDB Workbench: http://127.0.0.1:{server.server_address[1]}/", flush=True)
         if app.bootstrap_password:
-            print(f"First-run account: admin / {app.bootstrap_password}", flush=True)
+            print(f"Admin account for this run: admin / {app.bootstrap_password}", flush=True)
         try:
             server.serve_forever()
         except KeyboardInterrupt:

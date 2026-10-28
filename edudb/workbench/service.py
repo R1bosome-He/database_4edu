@@ -45,15 +45,18 @@ class Workbench:
         self.runtime = ContractRuntime(self.root / "database", buffer_pages=16,protector=self.protector)
         self.lock = self.runtime.request_lock
         self.sessions = {}
-        self.failures = {}
         try:
             self.identities = IdentityStore(self.root / "security" / "users.vault",self.protector)
             self.audit = AuditLog(self.root / "security" / "audit.vault",self.protector)
-            self.bootstrap_password = None
-            if not self.identities.data["users"]:
-                self.bootstrap_password = admin_password or secrets.token_urlsafe(16)
+            # Local classroom workflow: every server start announces a usable
+            # admin password without rebuilding users, grants or database files.
+            self.bootstrap_password = admin_password if admin_password is not None else secrets.token_urlsafe(16)
+            if "admin" not in self.identities.data["users"]:
                 self.identities.create("admin", self.bootstrap_password, "admin")
                 self.audit.append("BOOTSTRAP", "admin")
+            else:
+                self.identities.reset_password("admin", self.bootstrap_password)
+                self.audit.append("ADMIN_PASSWORD_ROTATED", "admin")
             self.evidence_path = evidence_path
             self.started = time.time()
             self.version = self._version()
@@ -83,12 +86,6 @@ class Workbench:
 
     def register(self,username,password,peer="local"):
         with self.lock:
-            now=time.monotonic()
-            key="register:"+peer
-            recent=[t for t in self.failures.get(key,[]) if now-t<60]
-            if len(recent)>=5:
-                raise DBError("RATE_LIMITED","注册请求过多，请稍后再试")
-            self.failures[key]=recent+[now]
             self.identities.create(username,password,"member")
             self.audit.append("REGISTER",username)
             return {"ok":True,"message":"账号已创建，请登录；数据访问权限由管理员授予"}
@@ -116,14 +113,9 @@ class Workbench:
     def login(self, username, password, peer="local"):
         with self.lock:
             now = time.monotonic()
-            failures = [value for value in self.failures.get(peer, []) if now - value < 60]
-            if len(failures) >= 5:
-                raise DBError("RATE_LIMITED", "Too many attempts; retry in one minute")
             if not self.identities.verify(username, password):
-                self.failures[peer] = failures + [now]
                 self.audit.append("LOGIN", None, False, error_code="INVALID_CREDENTIALS")
                 raise DBError("INVALID_CREDENTIALS", "Invalid username or password")
-            self.failures.pop(peer, None)
             self.audit.append("LOGIN", username)
             token = secrets.token_urlsafe(32)
             self.sessions[token] = Session(username, secrets.token_urlsafe(32),

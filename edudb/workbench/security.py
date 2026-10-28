@@ -62,6 +62,19 @@ class IdentityStore:
         data["users"][username] = dict(algorithm="pbkdf2-sha256",salt=salt,digest=digest,iterations=ITERATIONS,role=role,grants={})
         self._save(data)
 
+    def reset_password(self, username, password):
+        """Replace only password fields; preserve identity, role and grants."""
+        if username not in self.data["users"]:
+            raise DBError("USER_NOT_FOUND", "User does not exist")
+        if not isinstance(password, str) or not 12 <= len(password) <= 128:
+            raise DBError("WEAK_PASSWORD", "Password must contain 12-128 characters")
+        salt = secrets.token_hex(16)
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), ITERATIONS).hex()
+        data = json.loads(json.dumps(self.data))
+        data["users"][username].update(algorithm="pbkdf2-sha256", salt=salt,
+                                       digest=digest, iterations=ITERATIONS)
+        self._save(data)
+
     def verify(self, username, password):
         if not isinstance(username, str) or not isinstance(password, str) or len(password) > 128:
             return False

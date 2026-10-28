@@ -77,9 +77,15 @@ def migrate(source,destination):
             for number,line in enumerate(old_audit.read_text("utf-8").splitlines(),1):
                 audit.append(base64.b64encode(protector.seal(line.encode(),f"audit:{number}".encode())))
         atomic_write(stage/"security"/"audit.vault",b"\n".join(audit)+(b"\n" if audit else b""))
-        from .workbench.service import Workbench
-        check=Workbench(stage)
-        check.close()
+        # Migration validation is not a server startup: preserve copied account
+        # credentials until the user actually starts the new workbench.
+        from .workbench.security import IdentityStore
+        from .workbench.audit import AuditLog
+        from .integration.contract_runtime import ContractRuntime
+        IdentityStore(stage/"security"/"users.vault",protector)
+        AuditLog(stage/"security"/"audit.vault",protector)
+        with ContractRuntime(stage/"database",protector=protector):
+            pass
         stage.rename(destination)
         return dict(destination=str(destination),pages=count,log_records=lsn,source_unchanged=True)
     finally:
